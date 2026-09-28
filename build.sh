@@ -20,9 +20,13 @@ fi
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="$PROJECT_DIR/venv"
 
-# Create virtual environment if needed
-if [ ! -d "$VENV_DIR" ]; then
+# Create virtual environment if needed or if it's invalid
+if [ ! -d "$VENV_DIR" ] || [ ! -f "$VENV_DIR/bin/activate" ]; then
     echo "Creating virtual environment..."
+    # Remove invalid venv if it exists
+    if [ -d "$VENV_DIR" ]; then
+        rm -rf "$VENV_DIR"
+    fi
     if ! python3 -m venv "$VENV_DIR"; then
         echo "Error: Failed to create virtual environment"
         echo "Please ensure python3-venv package is installed"
@@ -31,14 +35,7 @@ if [ ! -d "$VENV_DIR" ]; then
 fi
 
 # Activate and install
-# Use source with explicit path to avoid issues
-if [ -f "$VENV_DIR/bin/activate" ]; then
-    source "$VENV_DIR/bin/activate"
-else
-    echo "Error: Virtual environment activation script not found at $VENV_DIR/bin/activate"
-    exit 1
-fi
-
+source "$VENV_DIR/bin/activate"
 pip3 install --upgrade pip
 pip3 install -r "$PROJECT_DIR/requirements.txt"
 
