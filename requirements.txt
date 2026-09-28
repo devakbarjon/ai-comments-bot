@@ -11,4 +11,5 @@ pydantic
 SQLAlchemy
 pytz
 kurigram
-
+openai
+TgCrypto

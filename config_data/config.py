@@ -19,19 +19,16 @@ class DB:
 
 
 @dataclass
-class NatsConfig:
-    servers: list[str]
-
-
-@dataclass
 class UserBot:
     api_id: int
     api_hash: str
 
 
 @dataclass
-class APIMart:
+class AIConfig:
     api_key: str
+    api_base: str
+    model: str
 
 
 @dataclass
@@ -39,8 +36,7 @@ class Config:
     bot: tg_bot
     user_bot: UserBot
     db: DB
-    nats: NatsConfig
-    apimart: APIMart
+    ai: AIConfig
 
 
 def load_config(path: str | None = None) -> Config:
@@ -49,20 +45,19 @@ def load_config(path: str | None = None) -> Config:
 
     return Config(
         bot=tg_bot(
-            token=env('token'),
-            admin_ids=list(map(int, env.list('admins')))
+            token=env('TOKEN'),
+            admin_ids=list(map(int, env.list('ADMINS')))
         ),
         user_bot=UserBot(
-            api_id=int(env('api_id')),
-            api_hash=env('api_hash')
+            api_id=int(env('API_ID')),
+            api_hash=env('API_HASH')
         ),
         db=DB(
-            dns=env('dns')
+            dns=env('DNS')
         ),
-        nats=NatsConfig(
-            servers=env.list('nats')
-        ),
-        apimart=APIMart(
-            api_key=env('apimart_api_key')
+        ai=AIConfig(
+            api_key=env('AI_API_KEY'),
+            api_base=env('AI_API_BASE'),
+            model=env('AI_MODEL')
         )
     )
