@@ -76,4 +76,5 @@ Thumbs.db
 accounts/*.session
 
 .venv
-.env*
+.env.local
+.env.*.local
