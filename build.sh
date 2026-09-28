@@ -45,5 +45,28 @@ if [ ! -f "$PROJECT_DIR/.env" ]; then
     exit 1
 fi
 
-echo "Setup complete. To run:"
-echo "  source venv/bin/activate && python3 bot.py"
+# Restart bot (kill existing if running, then start fresh)
+BOT_PID_FILE="$PROJECT_DIR/bot.pid"
+BOT_LOG_FILE="$PROJECT_DIR/bot.log"
+
+# Kill existing bot if running
+if [ -f "$BOT_PID_FILE" ]; then
+    if kill -0 $(cat "$BOT_PID_FILE") 2>/dev/null; then
+        echo "Stopping existing bot (PID: $(cat "$BOT_PID_FILE"))..."
+        kill $(cat "$BOT_PID_FILE")
+        # Wait a moment for process to terminate
+        sleep 2
+    fi
+    rm -f "$BOT_PID_FILE"
+fi
+
+# Start bot in background
+echo "Starting bot in background..."
+nohup python3 bot.py > "$BOT_LOG_FILE" 2>&1 &
+echo $! > "$BOT_PID_FILE"
+echo "Bot started! (PID: $(cat "$BOT_PID_FILE"))"
+echo "Logs: $BOT_LOG_FILE"
+echo "To view logs: tail -f $BOT_LOG_FILE"
+echo "To stop: kill $(cat "$BOT_PID_FILE")"
+
+echo "Setup complete."
