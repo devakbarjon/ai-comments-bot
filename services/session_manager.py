@@ -101,6 +101,11 @@ class SessionManager:
                     if counter >= 2:
                         break
                     try:
+
+                        if comment == "User Safety: safe":
+                            logger.error(f"Message moderted: {comment}")
+                            return
+                        
                         await client.send_message(
                             chat_id=discussion_message.chat.id,
                             text=comment,

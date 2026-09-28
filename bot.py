@@ -32,7 +32,7 @@ format = '[{asctime}] #{levelname:8} {filename}:' \
          '{lineno} - {name} - {message}'
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format=format,
     style='{'
 )
