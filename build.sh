@@ -1,4 +1,7 @@
 #!/bin/bash
+
+# Simple build script for AI Comments Bot deployment
+
 set -e
 
 # Check Python3
@@ -19,11 +22,23 @@ VENV_DIR="$PROJECT_DIR/venv"
 
 # Create virtual environment if needed
 if [ ! -d "$VENV_DIR" ]; then
-    python3 -m venv "$VENV_DIR"
+    echo "Creating virtual environment..."
+    if ! python3 -m venv "$VENV_DIR"; then
+        echo "Error: Failed to create virtual environment"
+        echo "Please ensure python3-venv package is installed"
+        exit 1
+    fi
 fi
 
 # Activate and install
-source "$VENV_DIR/bin/activate"
+# Use source with explicit path to avoid issues
+if [ -f "$VENV_DIR/bin/activate" ]; then
+    source "$VENV_DIR/bin/activate"
+else
+    echo "Error: Virtual environment activation script not found at $VENV_DIR/bin/activate"
+    exit 1
+fi
+
 pip3 install --upgrade pip
 pip3 install -r "$PROJECT_DIR/requirements.txt"
 
