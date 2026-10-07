@@ -10,7 +10,6 @@ from pyrogram import Client
 from pyrogram.types import Message
 from pyrogram.enums import MessageMediaType, ChatType
 
-from utils.image_funcs import photo_to_base64
 from utils.ai.commenting import get_comment
 from database.action_data_class import DataInteraction
 
@@ -68,10 +67,6 @@ class SessionManager:
                     if selected_account.usage > account.usage:
                         selected_account = account
 
-                image = None
-                if message.photo:
-                    image = await photo_to_base64(message.photo, client)
-
                 discussion_message = await client.get_discussion_message(
                     chat_id=message.chat.id,
                     message_id=message.id
@@ -85,7 +80,7 @@ class SessionManager:
                     if counter >= 2:
                         break
                     try:
-                        comment = await get_comment(message, channel, selected_account.type, image)
+                        comment = await get_comment(message, channel, selected_account.type)
                     except Exception as err:
                         logger.info(f'Failed to generate comment| Count: {counter}| Error: {err}')
                         counter += 1
@@ -335,16 +330,13 @@ async def test_func(session: DataInteraction, manager: SessionManager):
         if message.id not in message_ids:
             continue
 
-        image = None
-        if message.photo:
-            image = await photo_to_base64(message.photo, client)
         counter = 0
         comment = None
         while True:
             if counter >= 2:
                 break
             try:
-                comment = await get_comment(message, channel, selected_account.type, image)
+                comment = await get_comment(message, channel, selected_account.type)
                 break
             except Exception as err:
                 logger.error(f'Failed to generate comment| Count: {counter}| Error: {err}')

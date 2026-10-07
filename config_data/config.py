@@ -29,6 +29,8 @@ class AIConfig:
     api_key: str
     api_base: str
     model: str
+    gemini_api_key: str
+    gemini_model: str
 
 
 @dataclass
@@ -58,6 +60,8 @@ def load_config(path: str | None = None) -> Config:
         ai=AIConfig(
             api_key=env('AI_API_KEY'),
             api_base=env('AI_API_BASE'),
-            model=env('AI_MODEL')
+            model=env('AI_MODEL'),
+            gemini_api_key=env.str('GEMINI_API_KEY', default=''),
+            gemini_model=env.str('GEMINI_MODEL', default='gemini-2.5-flash')
         )
     )

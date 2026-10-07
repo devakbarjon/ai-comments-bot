@@ -33,7 +33,7 @@ prompts = {
 }
 
 
-async def get_comment(message: Message, channel: ChannelsTable, account_type: Literal['special', 'general'], image_base64: str = None) -> str:
+async def get_comment(message: Message, channel: ChannelsTable, account_type: Literal['special', 'general']) -> str:
     try:
         analytics = await get_post_analysis(message)
     except Exception as err:
@@ -73,7 +73,7 @@ async def get_comment(message: Message, channel: ChannelsTable, account_type: Li
     RETURN ONLY the comment text.
     '''
     try:
-        answer = await get_ai_answer(user_prompt, system_prompt, image_base64)
+        answer = await get_ai_answer(user_prompt, system_prompt)
         print(f'AI comment result:\n{answer}')
     except Exception as err:
         print(f'AI Gen comment err: {err}')
