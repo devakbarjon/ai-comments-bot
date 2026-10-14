@@ -31,6 +31,8 @@ class AIConfig:
     model: str
     gemini_api_key: str
     gemini_model: str
+    groq_api_key: str
+    groq_model: str
 
 
 @dataclass
@@ -62,6 +64,8 @@ def load_config(path: str | None = None) -> Config:
             api_base=env('AI_API_BASE'),
             model=env('AI_MODEL'),
             gemini_api_key=env.str('GEMINI_API_KEY', default=''),
-            gemini_model=env.str('GEMINI_MODEL', default='gemini-2.5-flash')
+            gemini_model=env.str('GEMINI_MODEL', default='gemini-2.5-flash'),
+            groq_api_key=env.str('GROQ_API_KEY', default=''),
+            groq_model=env.str('GROQ_MODEL', default='llama-3.3-70b-versatile')
         )
     )

@@ -74,18 +74,11 @@ class SessionManager:
                 if not discussion_message:
                     return
 
-                counter = 0
-                comment = None
-                while True:
-                    if counter >= 2:
-                        break
-                    try:
-                        comment = await get_comment(message, channel, selected_account.type)
-                    except Exception as err:
-                        logger.info(f'Failed to generate comment| Count: {counter}| Error: {err}')
-                        counter += 1
-                        continue
-                    break
+                try:
+                    comment = await get_comment(message, channel, selected_account.type)
+                except Exception as err:
+                    logger.info(f'Failed to generate comment| Error: {err}')
+                    return
                 if comment is None:
                     return
 
@@ -330,18 +323,11 @@ async def test_func(session: DataInteraction, manager: SessionManager):
         if message.id not in message_ids:
             continue
 
-        counter = 0
-        comment = None
-        while True:
-            if counter >= 2:
-                break
-            try:
-                comment = await get_comment(message, channel, selected_account.type)
-                break
-            except Exception as err:
-                logger.error(f'Failed to generate comment| Count: {counter}| Error: {err}')
-                counter += 1
-                continue
+        try:
+            comment = await get_comment(message, channel, selected_account.type)
+        except Exception as err:
+            logger.error(f'Failed to generate comment: {err}')
+            continue
 
         if comment is None:
             continue
