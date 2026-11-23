@@ -1,5 +1,5 @@
 import logging
-from typing import Optional, Tuple, Union, List
+from typing import Optional, Tuple, Union
 
 from aiogram import Bot
 from pyrogram import Client
@@ -82,45 +82,13 @@ async def _get_last_message(client: Client, chat_id: Union[int, str]) -> Optiona
         return None
 
 
-async def _get_last_messages(client: Client, chat_id: Union[int, str], limit: int = 5) -> List[Message]:
-    """
-    Вспомогательная функция для получения нескольких последних сообщений.
-
-    Args:
-        client: Клиент Kurigram
-        chat_id: ID чата
-        limit: Количество сообщений
-
-    Returns:
-        List[Message]: Список последних сообщений
-    """
-    messages = []
-    try:
-        # Получаем итератор истории
-        history_iterator = client.get_chat_history(
-            chat_id=chat_id,
-            limit=limit
-        )
-
-        # Собираем сообщения из итератора
-        async for message in history_iterator:
-            messages.append(message)
-            if len(messages) >= limit:
-                break
-
-    except Exception as e:
-        logger.warning(f"⚠️ Ошибка при получении истории чата: {e}")
-
-    return messages
-
-
 async def subscribe_to_channel(
         client: Client,
         channel: Union[str, int],
         check_existing: bool = True
 ) -> Tuple[bool, Optional[Chat], Optional[Chat]]:
     """
-    Подписывается на канал и опционально вступает в чат комментариев.
+    Подписывается на канал и получает чат комментариев без вступления в него.
 
     Args:
         client: Клиент Kurigram для выполнения действий
@@ -167,7 +135,7 @@ async def subscribe_to_channel(
                     logger.info(f"ℹ️ Аккаунт уже подписан на канал {chat.title}")
 
                     # Если уже подписан, сразу пробуем получить чат комментариев
-                    comments_chat = await _join_comments_chat(client, chat)
+                    comments_chat = await _get_comments_chat(client, chat)
                     return True, chat, comments_chat
 
             except Exception as e:
@@ -199,8 +167,8 @@ async def subscribe_to_channel(
         except Exception as e:
             raise ChannelSubscriptionError(f"Не удалось подписаться на канал {chat.title}: {e}")
 
-        # Шаг 4: Автоматически вступаем в чат комментариев (если нужно)
-        comments_chat = await _join_comments_chat(client, chat)
+        # Telegram permits guest comments unless the discussion group requires joining.
+        comments_chat = await _get_comments_chat(client, chat)
 
         logger.info(f"🎉 Завершена подписка на канал {chat.title}")
         return True, chat, comments_chat
@@ -213,96 +181,32 @@ async def subscribe_to_channel(
         raise ChannelSubscriptionError(f"Внутренняя ошибка: {e}")
 
 
-async def _join_comments_chat(client: Client, channel: Chat) -> Optional[Chat]:
+async def _get_comments_chat(client: Client, channel: Chat) -> Optional[Chat]:
     """
-    Внутренняя функция для вступления в чат комментариев канала.
+    Получает чат комментариев через сообщение обсуждения, не вступая в группу.
 
     Args:
         client: Клиент Kurigram
         channel: Объект канала
 
     Returns:
-        Optional[Chat]: Чат комментариев или None, если не удалось вступить
+        Optional[Chat]: Чат комментариев или None, если он не найден
     """
     try:
-        logger.info(f"💬 Пытаемся вступить в чат комментариев канала {channel.title}")
-
-        # Шаг 1: Получаем последнее сообщение канала для определения чата комментариев
-        try:
-            # Получаем последнее сообщение канала
-            last_message = await _get_last_message(client, channel.id)
-
-            if not last_message:
-                logger.info(f"ℹ️ В канале {channel.title} нет сообщений, чат комментариев не найден")
-                return None
-
-            # Шаг 2: Пробуем определить чат комментариев из сообщения
-            comments_chat_id = None
-
-            # Метод 1: Через reply_to_message (для постов с комментариями)
-            if hasattr(last_message, 'reply_to_message') and last_message.reply_to_message:
-                if hasattr(last_message.reply_to_message, 'chat'):
-                    comments_chat_id = last_message.reply_to_message.chat.id
-                    logger.info(f"✅ Найден чат комментариев через reply: {comments_chat_id}")
-
-            # Метод 2: Через reply_to_top (для обсуждений)
-            elif hasattr(last_message, 'reply_to_top') and last_message.reply_to_top:
-                if hasattr(last_message.reply_to_top, 'chat'):
-                    comments_chat_id = last_message.reply_to_top.chat.id
-                    logger.info(f"✅ Найден чат комментариев через reply_to_top: {comments_chat_id}")
-
-            # Метод 3: Пробуем получить связанный чат через get_chat
-            if not comments_chat_id:
-                try:
-                    # Для каналов с обсуждениями часто есть поле linked_chat_id
-                    full_chat = await client.get_chat(channel.id)
-                    if hasattr(full_chat, 'linked_chat_id') and full_chat.linked_chat_id:
-                        comments_chat_id = full_chat.linked_chat_id
-                        logger.info(f"✅ Найден чат комментариев через linked_chat_id: {comments_chat_id}")
-                except:
-                    pass
-
-            # Метод 4: Проверяем последние сообщения на наличие ссылок на чат обсуждения
-            if not comments_chat_id:
-                last_messages = await _get_last_messages(client, channel.id, limit=5)
-                for msg in last_messages:
-                    if hasattr(msg, 'reply_to_message') and msg.reply_to_message:
-                        if hasattr(msg.reply_to_message, 'chat'):
-                            comments_chat_id = msg.reply_to_message.chat.id
-                            logger.info(f"✅ Найден чат комментариев в одном из последних сообщений: {comments_chat_id}")
-                            break
-
-            # Шаг 3: Если нашли ID чата комментариев, пробуем вступить
-            if comments_chat_id:
-                try:
-                    # Проверяем, не состоим ли уже
-                    try:
-                        await client.get_chat_member(comments_chat_id, "me")
-                        logger.info(f"ℹ️ Уже состоим в чате комментариев {comments_chat_id}")
-                        return await client.get_chat(comments_chat_id)
-                    except:
-                        pass
-
-                    # Пробуем вступить в чат комментариев
-                    await client.join_chat(comments_chat_id)
-                    logger.info(f"✅ Успешно вступили в чат комментариев канала {channel.title}")
-
-                    # Получаем информацию о чате
-                    return await client.get_chat(comments_chat_id)
-
-                except Exception as e:
-                    logger.warning(f"⚠️ Не удалось вступить в чат комментариев: {e}")
-                    return None
-            else:
-                logger.info(f"ℹ️ У канала {channel.title} нет отдельного чата комментариев")
-                return None
-
-        except Exception as e:
-            logger.warning(f"⚠️ Ошибка при получении сообщений канала: {e}")
+        logger.info(f"💬 Ищем чат комментариев канала {channel.title} без вступления")
+        last_message = await _get_last_message(client, channel.id)
+        if not last_message:
+            logger.info(f"ℹ️ В канале {channel.title} нет сообщений")
             return None
 
+        discussion_message = await client.get_discussion_message(
+            chat_id=channel.id,
+            message_id=last_message.id,
+        )
+        logger.info(f"✅ Найден чат комментариев: {discussion_message.chat.id}")
+        return discussion_message.chat
     except Exception as e:
-        logger.warning(f"⚠️ Ошибка при вступлении в чат комментариев: {e}")
+        logger.warning(f"⚠️ Не удалось получить чат комментариев: {e}")
         return None
 
 

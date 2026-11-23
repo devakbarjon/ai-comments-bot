@@ -9,6 +9,7 @@ from datetime import datetime
 from pyrogram import Client
 from pyrogram.types import Message
 from pyrogram.enums import MessageMediaType, ChatType
+from pyrogram.errors import ChatGuestSendForbidden
 
 from utils.ai.commenting import get_comment
 from database.action_data_class import DataInteraction
@@ -67,7 +68,11 @@ class SessionManager:
                     if selected_account.usage > account.usage:
                         selected_account = account
 
-                discussion_message = await client.get_discussion_message(
+                selected_client = self.get(selected_account.account)
+                if selected_client is None:
+                    return
+
+                discussion_message = await selected_client.get_discussion_message(
                     chat_id=message.chat.id,
                     message_id=message.id
                 )
@@ -83,7 +88,6 @@ class SessionManager:
                     return
 
                 await self.session.set_account_usage(selected_account.id, datetime.now())
-                client = self.get(selected_account.account)
                 counter = 0
                 while True:
                     if counter >= 2:
@@ -94,11 +98,13 @@ class SessionManager:
                             logger.error(f"Message moderted: {comment}")
                             return
                         
-                        await client.send_message(
-                            chat_id=discussion_message.chat.id,
-                            text=comment,
-                            reply_to_message_id=discussion_message.id
+                        await discussion_message.reply(comment)
+                    except ChatGuestSendForbidden:
+                        logger.info(
+                            'Comment skipped: this discussion group requires joining; '
+                            'the bot does not join it automatically.'
                         )
+                        return
                     except Exception as err:
                         logger.info(f'Failed to send comment. Count: {counter}| Error: {err}')
                         counter += 1
