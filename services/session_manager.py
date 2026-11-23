@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import os
 import random
 from pathlib import Path
 from typing import Dict, Optional
@@ -9,7 +8,7 @@ from datetime import datetime
 from pyrogram import Client
 from pyrogram.types import Message
 from pyrogram.enums import MessageMediaType, ChatType
-from pyrogram.errors import ChatGuestSendForbidden
+from pyrogram.errors import AuthKeyUnregistered, ChatGuestSendForbidden
 
 from utils.ai.commenting import get_comment
 from database.action_data_class import DataInteraction
@@ -33,6 +32,18 @@ class SessionManager:
         self._tasks: Dict[str, asyncio.Task] = {}  # для отслеживания задач клиентов
         self._running = False
         self.session = session
+
+    @staticmethod
+    def _normalize_session_path(session_path: str) -> str:
+        path = Path(session_path)
+        if path.suffix != '.session':
+            path = Path('accounts') / f'{session_path}.session'
+        elif path.parent == Path('.'):
+            path = Path('accounts') / path
+
+        if path.parent != Path('accounts') or path.name in {'', '.', '..'}:
+            raise ValueError('Invalid account session path')
+        return str(path)
 
     async def _setup_handlers(self, client: Client, session_path: str):
         """
@@ -133,16 +144,25 @@ class SessionManager:
             while self._running and session_path in self._clients:
                 await asyncio.sleep(1)
 
-        except Exception as e:
-            logger.error(f"❌ Ошибка при работе клиента {session_path}: {e}")
+        except AuthKeyUnregistered:
+            logger.exception(
+                'Telegram authorization is invalid for session %s; remove and re-add the account',
+                session_path,
+            )
+        except Exception:
+            logger.exception(f"❌ Ошибка при работе клиента {session_path}")
         finally:
-            # Останавливаем клиент при выходе
-            if session_path in self._clients:
-                try:
+            try:
+                if client.is_connected:
                     await client.stop()
                     logger.info(f"⏹️ Клиент {session_path} остановлен")
-                except:
-                    pass
+            except Exception:
+                logger.exception(f"Failed to stop Telegram client {session_path}")
+
+            if self._clients.get(session_path) is client:
+                self._clients.pop(session_path, None)
+            if self._tasks.get(session_path) is asyncio.current_task():
+                self._tasks.pop(session_path, None)
 
     async def add(self, session_path: str) -> bool:
         """
@@ -155,24 +175,20 @@ class SessionManager:
         Returns:
             bool: True если успешно добавлен, False если ошибка
         """
-        session_path = 'accounts/' + session_path + '.session'
         try:
+            session_path = self._normalize_session_path(session_path)
             # Проверяем существование файла
             session_file = Path(session_path)
             if not session_file.exists():
                 logger.error(f"❌ Файл сессии не найден: {session_path}")
                 return False
 
-            session_name = session_file.stem
-
             if session_path in self._clients:
                 logger.warning(f"⚠️ Клиент {session_path} уже существует")
                 return False
 
-            print(session_path.rsplit('.', maxsplit=1)[0])
-            print(session_name)
             client = Client(
-                name=session_path.rsplit('.', maxsplit=1)[0],
+                name=str(session_file.with_suffix('')),
                 api_id=self.api_id,
                 api_hash=self.api_hash
             )
@@ -193,8 +209,8 @@ class SessionManager:
 
             return True
 
-        except Exception as e:
-            logger.error(f"❌ Ошибка при добавлении клиента {session_path}: {e}")
+        except Exception:
+            logger.exception(f"❌ Ошибка при добавлении клиента {session_path}")
             # Чистим за собой
             if session_path in self._clients:
                 del self._clients[session_path]
@@ -210,8 +226,11 @@ class SessionManager:
         Returns:
             Client или None если не найден
         """
-        session_path = 'accounts/' + session_path + '.session'
-        print(self._clients.get(session_path))
+        try:
+            session_path = self._normalize_session_path(session_path)
+        except ValueError:
+            logger.exception('Invalid account session path: %s', session_path)
+            return None
         return self._clients.get(session_path)
 
     async def remove(self, session_path: str, stop: bool = False) -> bool:
@@ -225,39 +244,40 @@ class SessionManager:
         Returns:
             bool: True если успешно удален
         """
-        print(session_path)
         try:
-            client = self._clients.get(session_path)
-            if not client:
-                logger.warning(f"⚠️ Клиент {session_path} не найден")
-                return False
+            session_path = self._normalize_session_path(session_path)
+            client = self._clients.pop(session_path, None)
+            task = self._tasks.pop(session_path, None)
 
-            # Останавливаем фоновую задачу
-            if session_path in self._tasks:
-                self._tasks[session_path].cancel()
-                del self._tasks[session_path]
+            if task and task is not asyncio.current_task():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
-            # Останавливаем клиента
-            try:
-                await client.stop()
-            except:
-                pass
-
-            # Удаляем из словаря
-            del self._clients[session_path]
-            logger.info(f"✅ Клиент {session_path} удален")
+            succeeded = True
+            if client and client.is_connected:
+                try:
+                    await client.stop()
+                except Exception:
+                    logger.exception('Failed to stop Telegram client %s', session_path)
+                    return False
 
             if not stop:
-                try:
-                    os.remove(f'{session_path}')
-                    os.remove(f'{session_path.replace(".session", ".session-journal")}')
-                except Exception:
-                    ...
+                for path in (Path(session_path), Path(f'{session_path}-journal')):
+                    try:
+                        path.unlink(missing_ok=True)
+                    except OSError:
+                        logger.exception('Failed to remove account session file %s', path)
+                        succeeded = False
 
-            return True
+            logger.info(f"✅ Клиент {session_path} удален")
 
-        except Exception as e:
-            logger.error(f"❌ Ошибка при удалении клиента {session_path}: {e}")
+            return succeeded
+
+        except Exception:
+            logger.exception(f"❌ Ошибка при удалении клиента {session_path}")
             return False
 
     async def start(self):

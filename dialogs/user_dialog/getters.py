@@ -1,6 +1,8 @@
 import asyncio
-import os
+import logging
 import random
+import re
+from pathlib import Path
 
 from aiogram.types import CallbackQuery, User, Message
 from aiogram_dialog import DialogManager, ShowMode
@@ -9,7 +11,13 @@ from aiogram_dialog.widgets.kbd import Button, Select
 from aiogram_dialog.widgets.input import ManagedTextInput, MessageInput
 from pyrogram import Client
 from pyrogram.types import SentCode
-from pyrogram.errors import PasswordHashInvalid
+from pyrogram.errors import (
+    AuthKeyUnregistered,
+    PasswordHashInvalid,
+    PhoneCodeExpired,
+    PhoneCodeInvalid,
+    SessionPasswordNeeded,
+)
 
 from utils.ai.adder import get_channel_analysis
 from services.session_manager import SessionManager
@@ -21,6 +29,68 @@ from states.state_groups import startSG
 
 
 config: Config = load_config()
+logger = logging.getLogger(__name__)
+
+
+def _account_key(name: str) -> str:
+    return re.sub(r'[^\w-]+', '_', name.strip()).strip('_-')
+
+
+async def _disconnect_login_client(client: Client | None) -> None:
+    if client and client.is_connected:
+        try:
+            await client.disconnect()
+        except Exception:
+            logger.exception('Failed to disconnect Telegram login client')
+
+
+async def _reset_invalid_login(dialog_manager: DialogManager, client: Client | None) -> None:
+    base_id = dialog_manager.dialog_data.get('base_id')
+    account_key = dialog_manager.dialog_data.get('account_key')
+    await _disconnect_login_client(client)
+
+    if account_key:
+        session_path = Path('accounts') / f'{account_key}.session'
+        for path in (session_path, Path(f'{session_path}-journal')):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                logger.exception('Failed to remove invalid Telegram session file %s', path)
+
+    dialog_manager.dialog_data.clear()
+    dialog_manager.dialog_data['base_id'] = base_id
+    await dialog_manager.switch_to(startSG.get_name)
+
+
+async def _complete_account_add(
+    message: Message,
+    dialog_manager: DialogManager,
+    client: Client,
+) -> None:
+    session: DataInteraction = dialog_manager.middleware_data.get('session')
+    manager: SessionManager = dialog_manager.middleware_data.get('manager')
+    base_id = dialog_manager.dialog_data.get('base_id')
+    name = dialog_manager.dialog_data.get('name')
+    account_key = dialog_manager.dialog_data.get('account_key')
+    account_type = dialog_manager.dialog_data.get('account_type')
+
+    await client.get_me()
+    await _disconnect_login_client(client)
+
+    if not await manager.add(account_key):
+        raise RuntimeError('The Telegram session could not be activated.')
+    try:
+        await session.add_base_account(base_id, account_key, name, account_type)
+    except Exception:
+        await manager.remove(account_key)
+        raise
+
+    dialog_manager.dialog_data.clear()
+    dialog_manager.dialog_data['base_id'] = base_id
+    await message.answer(text='✅ Ваш аккаунт был успешно добавлен')
+    await dialog_manager.switch_to(state=startSG.accounts)
+    for channel in await session.get_channels(base_id):
+        asyncio.create_task(subscribe_accounts(base_id, channel.id, manager, session))
 
 
 async def start_getter(event_from_user: User, dialog_manager: DialogManager, **kwargs):
@@ -86,7 +156,9 @@ async def del_base(clb: CallbackQuery, widget: Button, dialog_manager: DialogMan
     base = await session.get_base(base_id)
     accounts: list[AccountsTable] = base.accounts if base.accounts else []
     for account in accounts:
-        await manager.remove(account.account)
+        if not await manager.remove(account.account):
+            await clb.answer('Не удалось удалить сессию аккаунта. Попробуйте позже.', show_alert=True)
+            return
     await session.del_base(base_id)
     await clb.answer('База была успешно удаленна')
     dialog_manager.dialog_data.clear()
@@ -281,8 +353,10 @@ async def del_account(clb: CallbackQuery, button: Button, dialog_manager: Dialog
     base_id = dialog_manager.dialog_data.get('base_id')
     account_id = dialog_manager.dialog_data.get('account_id')
     account = await session.get_account(account_id)
+    if not await manager.remove(account.account):
+        await clb.answer('Не удалось удалить сессию аккаунта. Попробуйте позже.', show_alert=True)
+        return
     await session.del_account(account_id)
-    await manager.remove(account.account)
     await clb.answer('Аккаунт был успешно удален')
     dialog_manager.dialog_data.clear()
     dialog_manager.dialog_data['base_id'] = base_id
@@ -291,10 +365,19 @@ async def del_account(clb: CallbackQuery, button: Button, dialog_manager: Dialog
 
 async def get_name(msg: Message, widget: ManagedTextInput, dialog_manager: DialogManager, text: str):
     session: DataInteraction = dialog_manager.middleware_data.get('session')
-    if text in [account.name for account in await session.get_all_accounts()]:
+    name = text.strip()
+    account_key = _account_key(name)
+    if not account_key:
+        await msg.answer('❗️Введите название, содержащее буквы или цифры')
+        return
+    if len(account_key) > 64:
+        await msg.answer('❗️Название аккаунта слишком длинное')
+        return
+    if account_key in {account.account for account in await session.get_all_accounts()}:
         await msg.answer('❗️У вас уже есть аккаунт с таким названием, пожалуйста придумайте другое название')
         return
-    dialog_manager.dialog_data['name'] = text
+    dialog_manager.dialog_data['name'] = name
+    dialog_manager.dialog_data['account_key'] = account_key
     await dialog_manager.switch_to(startSG.choose_account_type)
 
 
@@ -304,74 +387,87 @@ async def choose_account_type(clb: CallbackQuery, widget: Button, dialog_manager
 
 
 async def phone_get(msg: Message, widget: ManagedTextInput, dialog_manager: DialogManager, text: str):
-    print('Начало соединения')
     name = dialog_manager.dialog_data.get('name')
-    client = Client(f'accounts/{name.replace(" ", "_")}', config.user_bot.api_id, config.user_bot.api_hash)
-    await client.connect()
-    print(text, type(text))
+    account_key = dialog_manager.dialog_data.get('account_key')
+    if not name or not account_key:
+        await msg.answer('❗️Состояние добавления аккаунта потеряно. Начните заново.')
+        await dialog_manager.switch_to(startSG.get_name)
+        return
+
+    Path('accounts').mkdir(parents=True, exist_ok=True)
+    client = Client(
+        str(Path('accounts') / account_key),
+        config.user_bot.api_id,
+        config.user_bot.api_hash,
+    )
     try:
-        print('Отправка кода')
+        await client.connect()
         sent_code_info: SentCode = await client.send_code(text.strip())
-    except Exception as err:
-        print(err)
-        await msg.answer('❗️Веденный номер телефона неверен, попробуйте снова')
+    except AuthKeyUnregistered:
+        logger.exception('The stored login session for account %s is invalid', account_key)
+        await _reset_invalid_login(dialog_manager, client)
+        await msg.answer('❗️Сессия входа устарела. Начните добавление аккаунта заново.')
+        return
+    except Exception:
+        logger.exception('Failed to request a Telegram login code')
+        await _disconnect_login_client(client)
+        await msg.answer('❗️Не удалось отправить код входа. Проверьте номер и попробуйте снова.')
         return
     dialog_manager.dialog_data['client'] = client
     dialog_manager.dialog_data['phone_info'] = sent_code_info
-    dialog_manager.dialog_data['phone_number'] = text
+    dialog_manager.dialog_data['phone_number'] = text.strip()
     await dialog_manager.switch_to(state=startSG.kod_send)
 
 
 async def get_kod(message: Message, widget: ManagedTextInput, dialog_manager: DialogManager, text: str):
-    session: DataInteraction = dialog_manager.middleware_data.get('session')
-    manager: SessionManager = dialog_manager.middleware_data.get('manager')
-    base_id = dialog_manager.dialog_data.get('base_id')
-    name = dialog_manager.dialog_data.get('name')
     client: Client = dialog_manager.dialog_data.get('client')
     phone_info: SentCode = dialog_manager.dialog_data.get('phone_info')
     phone = dialog_manager.dialog_data.get('phone_number')
-    account_type = dialog_manager.dialog_data.get('account_type')
-    code = ''
-    if len(text.split('-')) != 5:
-        await message.answer(text='❗️Вы отправили код в неправильном формате, попробуйте вести код снова')
+    if not client or not phone_info or not phone:
+        await message.answer('❗️Состояние входа потеряно. Начните добавление аккаунта заново.')
+        await _reset_invalid_login(dialog_manager, client)
         return
-    for number in text.split('-'):
-        code += number
-    print(code)
+
+    code = text.replace('-', '').strip()
+    if not code.isdigit() or not 4 <= len(code) <= 8:
+        await message.answer('❗️Неверный формат кода. Отправьте код из Telegram.')
+        return
+
     try:
         await client.sign_in(phone, phone_info.phone_code_hash, code)
-        await client.disconnect()
-        await session.add_base_account(base_id, name.replace(" ", "_"), name, account_type)
-        await manager.add(name.replace(" ", "_"))
-        dialog_manager.dialog_data['base_id'] = base_id
-        dialog_manager.dialog_data.clear()
-        await dialog_manager.switch_to(state=startSG.accounts)
-        for channel in await session.get_channels(base_id):
-            asyncio.create_task(subscribe_accounts(base_id, channel.id, manager, session))
-    except Exception as err:
-        print(err)
+        await _complete_account_add(message, dialog_manager, client)
+    except SessionPasswordNeeded:
         await dialog_manager.switch_to(state=startSG.get_password)
+    except PhoneCodeInvalid:
+        await message.answer('❗️Код неверный. Проверьте его и попробуйте снова.')
+    except PhoneCodeExpired:
+        await _reset_invalid_login(dialog_manager, client)
+        await message.answer('❗️Код истёк. Начните добавление аккаунта заново.')
+    except AuthKeyUnregistered:
+        logger.exception('Telegram invalidated the login session during code verification')
+        await _reset_invalid_login(dialog_manager, client)
+        await message.answer('❗️Сессия входа устарела. Начните добавление аккаунта заново.')
+    except Exception:
+        logger.exception('Failed to verify Telegram login code')
+        await message.answer('❗️Не удалось завершить вход. Попробуйте ещё раз.')
 
 
 async def get_password(message: Message, widget: ManagedTextInput, dialog_manager: DialogManager, text: str):
     client: Client = dialog_manager.dialog_data.get('client')
-    base_id = dialog_manager.dialog_data.get('base_id')
-    session: DataInteraction = dialog_manager.middleware_data.get('session')
-    manager: SessionManager = dialog_manager.middleware_data.get('manager')
-    name = dialog_manager.dialog_data.get('name')
-    account_type = dialog_manager.dialog_data.get('account_type')
-    dialog_manager.dialog_data.clear()
-    dialog_manager.dialog_data['base_id'] = base_id
+    if not client:
+        await message.answer('❗️Состояние входа потеряно. Начните добавление аккаунта заново.')
+        await _reset_invalid_login(dialog_manager, client)
+        return
+
     try:
         await client.check_password(text)
-        await client.disconnect()
-        await session.add_base_account(base_id, name.replace(" ", "_"), name, account_type)
-        await manager.add(name.replace(" ", "_"))
-        await message.answer(text='✅Ваш аккаунт был успешно добавлен')
-        await dialog_manager.switch_to(state=startSG.accounts)
-        for channel in await session.get_channels(base_id):
-            asyncio.create_task(subscribe_accounts(base_id, channel.id, manager, session))
-    except PasswordHashInvalid as err:
-        print(err)
+        await _complete_account_add(message, dialog_manager, client)
+    except PasswordHashInvalid:
         await message.answer(text='❗️Введенные данные были неверны, пожалуйста попробуйте авторизоваться снова')
-        await dialog_manager.switch_to(state=startSG.get_name)
+    except AuthKeyUnregistered:
+        logger.exception('Telegram invalidated the login session during password verification')
+        await _reset_invalid_login(dialog_manager, client)
+        await message.answer('❗️Сессия входа устарела. Начните добавление аккаунта заново.')
+    except Exception:
+        logger.exception('Failed to verify Telegram two-step verification password')
+        await message.answer('❗️Не удалось завершить вход. Попробуйте ещё раз.')
